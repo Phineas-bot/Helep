@@ -1,0 +1,22 @@
+replicaCount: 1
+image:
+  repository: helep_user-service
+tag: latest
+pullPolicy: IfNotPresent
+service:
+  port: 8001
+persistence:
+  enabled: true
+  size: 100Mi
+ingress:
+  enabled: false
+  host: ""
+hpa:
+  minReplicas: 1
+  maxReplicas: 3
+  cpuUtilization: 60
+networkPolicy:
+  enabled: false
+resources: {}
+env: {}
+secret: {}

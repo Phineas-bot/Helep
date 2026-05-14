@@ -1,0 +1,114 @@
+{{- if .Values.monitoring.enabled }}
+{{- if .Values.monitoring.serviceMonitor.enabled }}
+{{- range $name, $svc := .Values.services }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ printf "%s-%s" $.Release.Name $name | trunc 63 | trimSuffix "-" }}
+  labels:
+    release: {{ $.Values.monitoring.serviceMonitor.releaseLabel }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ $.Release.Namespace }}
+  selector:
+    matchLabels:
+      app: {{ printf "%s-%s" $.Release.Name $name | trunc 63 | trimSuffix "-" }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+{{- end }}
+    {{- end }}
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-prometheus-scrape-configs
+  labels:
+    app.kubernetes.io/name: helep
+    app.kubernetes.io/component: monitoring
+data:
+  additional-scrape-configs.yaml: |
+{{- range $name, $svc := .Values.services }}
+    - job_name: {{ printf "%s-%s" $.Release.Name $name | trunc 63 | trimSuffix "-" }}
+      metrics_path: /metrics
+      scrape_interval: 30s
+      static_configs:
+        - targets:
+            - {{ printf "%s-%s.%s.svc.cluster.local:%v" $.Release.Name $name $.Release.Namespace $svc.service.port }}
+{{- end }}
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-grafana-dashboard
+  labels:
+    {{ .Values.monitoring.grafana.dashboardLabel }}: "1"
+    app.kubernetes.io/name: helep
+    app.kubernetes.io/component: monitoring
+data:
+  helep-service-metrics.json: |
+    {
+      "uid": "helep-service-metrics",
+      "title": "HELEP Service Metrics",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "30s",
+      "time": {
+        "from": "now-6h",
+        "to": "now"
+      },
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "User signups",
+          "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+          "datasource": "Prometheus",
+          "targets": [
+            { "expr": "increase(helep_user_signups_total[5m])", "refId": "A" }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "SOS triggers",
+          "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+          "datasource": "Prometheus",
+          "targets": [
+            { "expr": "increase(helep_sos_triggers_total[5m])", "refId": "A" }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Dispatch assignments",
+          "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+          "datasource": "Prometheus",
+          "targets": [
+            { "expr": "increase(helep_dispatch_assigned_total[5m])", "refId": "A" }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Notifications sent",
+          "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+          "datasource": "Prometheus",
+          "targets": [
+            { "expr": "increase(helep_notifications_sent_total[5m])", "refId": "A" }
+          ]
+        },
+        {
+          "type": "stat",
+          "title": "Analytics event stream counts",
+          "gridPos": { "x": 0, "y": 16, "w": 24, "h": 8 },
+          "datasource": "Prometheus",
+          "targets": [
+            { "expr": "sum by (stream) (increase(helep_analytics_events_total[5m]))", "refId": "A" }
+          ]
+        }
+      ]
+    }
+{{- end }}

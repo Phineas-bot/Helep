@@ -1,0 +1,10 @@
+replicaCount: 1
+service:
+  port: 8004
+persistence:
+  enabled: true
+  size: 100Mi
+ingress:
+  enabled: false
+networkPolicy:
+  enabled: false

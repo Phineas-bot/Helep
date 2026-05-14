@@ -1,0 +1,213 @@
+name: ci-cd
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: ${{ github.repository_owner }}
+  APP_NAME: helep
+  K8S_NAMESPACE: helep
+  KAFKA_NAMESPACE: kafka
+  MONITORING_NAMESPACE: monitoring
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Syntax check
+        run: python -m compileall services
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Helm lint
+        run: helm lint charts/helep
+
+  test:
+    runs-on: ubuntu-latest
+    needs: validate
+    services:
+      kafka:
+        image: apache/kafka:3.7.0
+        ports:
+          - 9092:9092
+        env:
+          KAFKA_NODE_ID: 1
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+        options: >-
+          --health-cmd "kafka-topics.sh --bootstrap-server localhost:9092 --list"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: |
+          pip install -r tests/requirements.txt
+          pip install -r services/user-service/requirements.txt
+          pip install -r services/sos-service/requirements.txt
+          pip install -r services/dispatch-service/requirements.txt
+          pip install -r services/notification-service/requirements.txt
+          pip install -r services/analytics-service/requirements.txt
+
+      - name: Create Kafka topics
+        run: |
+          kafka-topics.sh --bootstrap-server localhost:9092 --create --topic user.registered --partitions 3 --replication-factor 1
+          kafka-topics.sh --bootstrap-server localhost:9092 --create --topic sos.triggered --partitions 3 --replication-factor 1
+          kafka-topics.sh --bootstrap-server localhost:9092 --create --topic sos.cancelled --partitions 3 --replication-factor 1
+          kafka-topics.sh --bootstrap-server localhost:9092 --create --topic responder.assigned --partitions 3 --replication-factor 1
+          kafka-topics.sh --bootstrap-server localhost:9092 --create --topic responder.confirmed --partitions 3 --replication-factor 1
+          kafka-topics.sh --bootstrap-server localhost:9092 --create --topic safety.zone.entered --partitions 3 --replication-factor 1
+          kafka-topics.sh --bootstrap-server localhost:9092 --create --topic notification.sent --partitions 3 --replication-factor 1
+
+      - name: Start services
+        run: |
+          # Start services in background
+          python -m uvicorn services.user-service.app.main:app --host 0.0.0.0 --port 8001 &
+          python -m uvicorn services.sos-service.app.main:app --host 0.0.0.0 --port 8002 &
+          python -m uvicorn services.dispatch-service.app.main:app --host 0.0.0.0 --port 8003 &
+          python -m uvicorn services.notification-service.app.main:app --host 0.0.0.0 --port 8004 &
+          python -m uvicorn services.analytics-service.app.main:app --host 0.0.0.0 --port 8005 &
+          sleep 10
+
+      - name: Run smoke tests
+        run: pytest tests/test_smoke.py -v --tb=short
+
+      - name: Run saga tests
+        run: pytest tests/test_saga.py -v --tb=short
+
+      - name: Generate test report
+        run: pytest tests/ --cov=services --cov-report=xml --cov-report=term
+
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: [validate, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - user-service
+          - sos-service
+          - dispatch-service
+          - notification-service
+          - analytics-service
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        run: |
+          IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/helep-${{ matrix.service }}
+          echo "image_name=$IMAGE_NAME" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./services/${{ matrix.service }}
+          file: ./services/${{ matrix.service }}/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image_name }}:${{ steps.meta.outputs.image_tag }}
+            ${{ steps.meta.outputs.image_name }}:latest
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "${KUBE_CONFIG_DATA}" | base64 -d > "$HOME/.kube/config"
+        env:
+          KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+
+      - name: Create GHCR image pull secret
+        if: ${{ secrets.REGISTRY_USERNAME != '' && secrets.REGISTRY_PASSWORD != '' }}
+        run: |
+          kubectl create secret docker-registry ghcr-creds \
+            --docker-server=ghcr.io \
+            --docker-username="${REGISTRY_USERNAME}" \
+            --docker-password="${REGISTRY_PASSWORD}" \
+            --docker-email="${REGISTRY_EMAIL}" \
+            --namespace "$K8S_NAMESPACE" \
+            --dry-run=client -o yaml | kubectl apply -f -
+        env:
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+          REGISTRY_EMAIL: ${{ secrets.REGISTRY_EMAIL }}
+
+      - name: Ensure namespaces exist
+        run: kubectl apply -f k8s/infra/namespaces.yaml
+
+      - name: Apply Kafka cluster and topics
+        run: kubectl apply -f k8s/infra/kafka-cluster.yaml -f k8s/infra/kafka-topics.yaml
+
+      - name: Deploy HELEP chart
+        run: |
+          EXTRA_ARGS=""
+          if kubectl get secret ghcr-creds -n "$K8S_NAMESPACE" >/dev/null 2>&1; then
+            EXTRA_ARGS="--set global.imagePullSecrets[0].name=ghcr-creds"
+          fi
+          helm upgrade --install "$APP_NAME" charts/helep \
+            --namespace "$K8S_NAMESPACE" --create-namespace \
+            --set global.imagePullPolicy=IfNotPresent \
+            --set services.user-service.image.repository=ghcr.io/${{ github.repository_owner }}/helep-user-service \
+            --set services.user-service.image.tag=${GITHUB_SHA} \
+            --set services.sos-service.image.repository=ghcr.io/${{ github.repository_owner }}/helep-sos-service \
+            --set services.sos-service.image.tag=${GITHUB_SHA} \
+            --set services.dispatch-service.image.repository=ghcr.io/${{ github.repository_owner }}/helep-dispatch-service \
+            --set services.dispatch-service.image.tag=${GITHUB_SHA} \
+            --set services.notification-service.image.repository=ghcr.io/${{ github.repository_owner }}/helep-notification-service \
+            --set services.notification-service.image.tag=${GITHUB_SHA} \
+            --set services.analytics-service.image.repository=ghcr.io/${{ github.repository_owner }}/helep-analytics-service \
+            --set services.analytics-service.image.tag=${GITHUB_SHA} \
+            ${EXTRA_ARGS}

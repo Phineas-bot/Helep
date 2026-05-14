@@ -1,0 +1,68 @@
+{{- range $name, $svc := .Values.services }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ printf "%s-%s" $.Release.Name $name | trunc 63 | trimSuffix "-" }}
+  labels:
+    app: {{ printf "%s-%s" $.Release.Name $name | trunc 63 | trimSuffix "-" }}
+spec:
+  replicas: {{ $svc.replicaCount | default 1 }}
+  selector:
+    matchLabels:
+      app: {{ printf "%s-%s" $.Release.Name $name | trunc 63 | trimSuffix "-" }}
+  template:
+    metadata:
+      labels:
+        app: {{ printf "%s-%s" $.Release.Name $name | trunc 63 | trimSuffix "-" }}
+    spec:
+{{- with $.Values.global.imagePullSecrets }}
+      imagePullSecrets:
+{{ toYaml . | indent 8 }}
+{{- end }}
+      containers:
+        - name: {{ $name }}
+          image: "{{ $svc.image.repository }}:{{ $svc.image.tag }}"
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy | default "IfNotPresent" }}
+          ports:
+            - name: http
+              containerPort: {{ $svc.service.port }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ $svc.service.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: {{ $svc.service.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          env:
+{{- with $svc.env }}
+{{ toYaml . | indent 12 }}
+{{- end }}
+          resources:
+{{- if $svc.resources }}
+{{ toYaml $svc.resources | indent 12 }}
+{{- else }}
+{{ toYaml $.Values.defaultResources | indent 12 }}
+{{- end }}
+          volumeMounts:
+{{- if $svc.persistence.enabled }}
+            - name: data
+              mountPath: /data
+{{- end }}
+      volumes:
+{{- if $svc.persistence.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ printf "%s-%s" $.Release.Name $name | trunc 63 | trimSuffix "-" }}-pvc
+{{- end }}
+      terminationGracePeriodSeconds: {{ $svc.terminationGracePeriodSeconds | default 30 }}
+{{- end }}

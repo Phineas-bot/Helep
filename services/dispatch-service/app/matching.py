@@ -54,8 +54,35 @@ class CredibilityWeightedMatcher:
         return {"id": best["id"], "score": best_score}
 
 
+class RoundRobinMatcher:
+    """Cycles through available responders regardless of location/credibility."""
+    def __init__(self):
+        self.last_assigned = None
+
+    def pick(self, victim_lat, victim_lon, responders):
+        responders_list = list(responders)
+        if not responders_list:
+            return None
+        
+        # Find next responder after last assigned (or first if none)
+        if self.last_assigned is None:
+            next_responder = responders_list[0]
+        else:
+            try:
+                last_idx = next(i for i, r in enumerate(responders_list) if r["id"] == self.last_assigned)
+                next_idx = (last_idx + 1) % len(responders_list)
+                next_responder = responders_list[next_idx]
+            except (StopIteration, IndexError):
+                next_responder = responders_list[0]
+        
+        self.last_assigned = next_responder["id"]
+        return {"id": next_responder["id"], "strategy": "round_robin"}
+
+
 def matcher() -> Matcher:
     name = os.getenv("MATCHER", "nearest").lower()
     if name == "credibility":
         return CredibilityWeightedMatcher()
+    elif name == "round_robin":
+        return RoundRobinMatcher()
     return NearestMatcher()

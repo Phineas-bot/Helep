@@ -1,0 +1,105 @@
+# Dev values for local testing (use with `helm install -f values.dev.yaml`)
+global:
+  imagePullPolicy: IfNotPresent
+
+monitoring:
+  enabled: false
+
+services:
+  user-service:
+    image:
+      tag: latest
+    ingress:
+      enabled: false
+    hpa:
+      minReplicas: 1
+      maxReplicas: 3
+      cpuUtilization: 60
+    networkPolicy:
+      enabled: false
+    persistence:
+      enabled: true
+      size: 100Mi
+    env:
+      KAFKA_BOOTSTRAP: kafka:9092
+      DB_PATH: /data/user.db
+      JWT_SECRET: dev-only
+      SERVICE_PORT: "8001"
+
+  sos-service:
+    image:
+      tag: latest
+    ingress:
+      enabled: false
+    hpa:
+      minReplicas: 1
+      maxReplicas: 3
+      cpuUtilization: 60
+    networkPolicy:
+      enabled: false
+    persistence:
+      enabled: true
+      size: 100Mi
+    env:
+      KAFKA_BOOTSTRAP: kafka:9092
+      DB_PATH: /data/sos.db
+      JWT_SECRET: dev-only
+      SERVICE_PORT: "8002"
+
+  dispatch-service:
+    image:
+      tag: latest
+    ingress:
+      enabled: false
+    hpa:
+      minReplicas: 1
+      maxReplicas: 3
+      cpuUtilization: 60
+    networkPolicy:
+      enabled: false
+    persistence:
+      enabled: true
+      size: 100Mi
+    env:
+      KAFKA_BOOTSTRAP: kafka:9092
+      DB_PATH: /data/dispatch.db
+      MATCHER: nearest
+      SERVICE_PORT: "8003"
+
+  notification-service:
+    image:
+      tag: latest
+    ingress:
+      enabled: false
+    hpa:
+      minReplicas: 1
+      maxReplicas: 3
+      cpuUtilization: 60
+    networkPolicy:
+      enabled: false
+    persistence:
+      enabled: true
+      size: 100Mi
+    env:
+      KAFKA_BOOTSTRAP: kafka:9092
+      DB_PATH: /data/notification.db
+      SERVICE_PORT: "8004"
+
+  analytics-service:
+    image:
+      tag: latest
+    ingress:
+      enabled: false
+    hpa:
+      minReplicas: 1
+      maxReplicas: 3
+      cpuUtilization: 60
+    networkPolicy:
+      enabled: false
+    persistence:
+      enabled: true
+      size: 100Mi
+    env:
+      KAFKA_BOOTSTRAP: kafka:9092
+      DB_PATH: /data/analytics.db
+      SERVICE_PORT: "8005"

@@ -1,0 +1,14 @@
+{{- range $name, $svc := .Values.services }}
+{{- if $svc.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ printf "%s-%s-pvc" $.Release.Name $name | trunc 63 | trimSuffix "-" }}
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  resources:
+    requests:
+      storage: {{ $svc.persistence.size }}
+{{- end }}
+{{- end }}
